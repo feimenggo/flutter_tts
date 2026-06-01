@@ -341,6 +341,17 @@ class FlutterTts {
     _channel.setMethodCallHandler(platformCallHandler);
   }
 
+  /// [Future] which returns true if TTS is available on the current platform
+  /// On Windows, this returns false if the speech API is not available
+  /// (e.g. on stripped-down Windows editions)
+  Future<bool> get isTtsAvailable async {
+    try {
+      return await _channel.invokeMethod<bool>('isTtsAvailable') ?? false;
+    } on MissingPluginException {
+      return true;
+    }
+  }
+
   /// [Future] which sets speak's future to return on completion of the utterance
   Future<dynamic> awaitSpeakCompletion(bool awaitCompletion) async =>
       await _channel.invokeMethod('awaitSpeakCompletion', awaitCompletion);

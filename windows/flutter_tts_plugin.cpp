@@ -48,6 +48,7 @@ namespace {
 		void getLanguages(flutter::EncodableList&);
 		void setLanguage(const std::string, FlutterResult&);
 		void addMplayer();
+		bool initTTS();
 		winrt::Windows::Foundation::IAsyncAction asyncSpeak(const std::string);
 		bool speaking();
 		bool paused();
@@ -56,6 +57,7 @@ namespace {
 		bool isPaused;
 		bool isSpeaking;
 		bool awaitSpeakCompletion;
+		bool ttsInitialized;
 		FlutterResult speakResult;
 	};
 
@@ -72,6 +74,18 @@ namespace {
 			plugin_pointer->HandleMethodCall(call, std::move(result));
 		});
 		registrar->AddPlugin(std::move(plugin));
+	}
+
+	bool FlutterTtsPlugin::initTTS() {
+		if (ttsInitialized) return true;
+		try {
+			synth = SpeechSynthesizer();
+			addMplayer();
+			ttsInitialized = true;
+			return true;
+		} catch (...) {
+			return false;
+		}
 	}
 
 	void FlutterTtsPlugin::addMplayer() {
@@ -108,6 +122,7 @@ namespace {
 	}
 
 	void FlutterTtsPlugin::speak(const std::string text, FlutterResult result) {
+		if (!ttsInitialized) { result->Error("TTS_NOT_AVAILABLE", "TTS is not available on this system"); return; }
 		isSpeaking = true;
 		auto my_task{ asyncSpeak(text) };
 		methodChannel->InvokeMethod("speak.onStart", NULL);
@@ -116,18 +131,21 @@ namespace {
 	};
 
 	void FlutterTtsPlugin::pause() {
+		if (!ttsInitialized) return;
 		mPlayer.Pause();
 		isPaused = true;
 		methodChannel->InvokeMethod("speak.onPause", NULL);
 	}
 
 	void FlutterTtsPlugin::continuePlay() {
+		if (!ttsInitialized) return;
 		mPlayer.Play();
 		isPaused = false;
 		methodChannel->InvokeMethod("speak.onContinue", NULL);
 	}
 
 	void FlutterTtsPlugin::stop() {
+		if (!ttsInitialized) return;
 	    methodChannel->InvokeMethod("speak.onCancel", NULL);
         if (awaitSpeakCompletion) {
             speakResult->Success(1);
@@ -138,13 +156,14 @@ namespace {
 		isSpeaking = false;
 		isPaused = false;
 	}
-	void FlutterTtsPlugin::setVolume(const double newVolume) { synth.Options().AudioVolume(newVolume); }
+	void FlutterTtsPlugin::setVolume(const double newVolume) { if (!ttsInitialized) return; synth.Options().AudioVolume(newVolume); }
 
-	void FlutterTtsPlugin::setPitch(const double newPitch) { synth.Options().AudioPitch(newPitch); }
+	void FlutterTtsPlugin::setPitch(const double newPitch) { if (!ttsInitialized) return; synth.Options().AudioPitch(newPitch); }
 
-	void FlutterTtsPlugin::setRate(const double newRate) { synth.Options().SpeakingRate(newRate + 0.5); }
+	void FlutterTtsPlugin::setRate(const double newRate) { if (!ttsInitialized) return; synth.Options().SpeakingRate(newRate + 0.5); }
 
 	void FlutterTtsPlugin::getVoices(flutter::EncodableList& voices) {
+		if (!ttsInitialized) return;
 		auto synthVoices = synth.AllVoices();
 		std::for_each(begin(synthVoices), end(synthVoices), [&voices](const VoiceInformation& voice)
 			{
@@ -172,6 +191,7 @@ namespace {
 	}
 
 	void FlutterTtsPlugin::setVoice(const std::string voiceLanguage, const std::string voiceName, FlutterResult& result) {
+		if (!ttsInitialized) { result->Success(0); return; }
 		bool found = false;
 		auto voices = synth.AllVoices();
 		VoiceInformation newVoice = synth.Voice();
@@ -189,6 +209,7 @@ namespace {
 	}
 
 	void FlutterTtsPlugin::getLanguages(flutter::EncodableList& languages) {
+		if (!ttsInitialized) return;
 		auto synthVoices = synth.AllVoices();
 		std::set<flutter::EncodableValue> languagesSet = {};
 		std::for_each(begin(synthVoices), end(synthVoices), [&languagesSet](const VoiceInformation& voice)
@@ -201,6 +222,7 @@ namespace {
 			});
 	}
 	void FlutterTtsPlugin::setLanguage(const std::string voiceLanguage, FlutterResult& result) {
+		if (!ttsInitialized) { result->Success(0); return; }
 		bool found = false;
 		auto voices = synth.AllVoices();
 		VoiceInformation newVoice = synth.Voice();
@@ -216,23 +238,28 @@ namespace {
 
 
 	FlutterTtsPlugin::FlutterTtsPlugin() {
-		synth = SpeechSynthesizer();
-		addMplayer();
 		isPaused = false;
 		isSpeaking = false;
 		awaitSpeakCompletion = false;
+		ttsInitialized = false;
 		speakResult = FlutterResult();
 	}
 
-	FlutterTtsPlugin::~FlutterTtsPlugin() { mPlayer.Close(); }
+	FlutterTtsPlugin::~FlutterTtsPlugin() { if (ttsInitialized) { mPlayer.Close(); } }
 
 	void FlutterTtsPlugin::HandleMethodCall(
 		const flutter::MethodCall<flutter::EncodableValue>& method_call,
 		FlutterResult result) {
-		if (method_call.method_name().compare("getPlatformVersion") == 0) {
+		if (method_call.method_name().compare("isTtsAvailable") == 0) {
+			if (!ttsInitialized) initTTS();
+			result->Success(flutter::EncodableValue(ttsInitialized));
+			return;
+		}
+		else if (method_call.method_name().compare("getPlatformVersion") == 0) {
 			std::ostringstream version_stream;
 			version_stream << "Windows UWP";
 			result->Success(flutter::EncodableValue(version_stream.str()));
+			return;
 		}
 
 #else
@@ -268,9 +295,11 @@ namespace {
 		void getLanguages(flutter::EncodableList&);
 		void setLanguage(const std::string, FlutterResult&);
 
+		bool initTTS();
 		ISpVoice* pVoice;
 		bool awaitSpeakCompletion = false;
 		bool isPaused;
+		bool ttsInitialized;
 		double pitch;
 		bool speaking();
 		bool paused();
@@ -293,28 +322,32 @@ namespace {
 		registrar->AddPlugin(std::move(plugin));
 	}
 
+	bool FlutterTtsPlugin::initTTS() {
+		if (ttsInitialized) return true;
+		HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+		if (FAILED(hr)) return false;
+
+		hr = CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (void**)&pVoice);
+		if (FAILED(hr)) {
+			return false;
+		}
+		ttsInitialized = true;
+		return true;
+	}
+
 	FlutterTtsPlugin::FlutterTtsPlugin() {
 		addWaitHandle = NULL;
 		isPaused = false;
 		speakResult = NULL;
 		pVoice = NULL;
-		HRESULT hr;
-		hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-		if (FAILED(hr))
-		{
-			throw std::exception("TTS init failed");
-		}
-
-		hr = CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (void**)&pVoice);
-		if (FAILED(hr))
-		{
-			throw std::exception("TTS create instance failed");
-		}
 		pitch = 0;
+		ttsInitialized = false;
 	}
 
 	FlutterTtsPlugin::~FlutterTtsPlugin() {
-		::CoUninitialize();
+		if (ttsInitialized) {
+			::CoUninitialize();
+		}
 	}
 
     void CALLBACK setResult(PVOID lpParam, BOOLEAN TimerOrWaitFired)
@@ -330,6 +363,7 @@ namespace {
 
 	bool FlutterTtsPlugin::speaking()
 	{
+		if (!ttsInitialized) return false;
 		SPVOICESTATUS status;
 		pVoice->GetStatus(&status, NULL);
 		if (status.dwRunningState == SPRS_IS_SPEAKING) return true;
@@ -339,6 +373,7 @@ namespace {
 
 
 	void FlutterTtsPlugin::speak(const std::string text, FlutterResult result) {
+		if (!ttsInitialized) { result->Error("TTS_NOT_AVAILABLE", "TTS is not available on this system"); return; }
 		HRESULT hr;
 		const std::string arg = "<PITCH MIDDLE = '" + std::to_string(int((pitch - 1) * 10 * (1 + (pitch < 1)) )) + "'/>" + text;
 
@@ -358,6 +393,7 @@ namespace {
 	}
 	void FlutterTtsPlugin::pause()
 	{
+		if (!ttsInitialized) return;
 		if (isPaused == false)
 		{
 			pVoice->Pause();
@@ -367,12 +403,14 @@ namespace {
 	}
 	void FlutterTtsPlugin::continuePlay()
 	{
+		if (!ttsInitialized) return;
 		isPaused = false;
 		pVoice->Resume();
 	    methodChannel->InvokeMethod("speak.onContinue", NULL);
 	}
 	void FlutterTtsPlugin::stop()
 	{
+		if (!ttsInitialized) return;
 		pVoice->Speak(L"", 2, NULL);
 		pVoice->Resume();
 		isPaused = false;
@@ -380,16 +418,19 @@ namespace {
 	}
 	void FlutterTtsPlugin::setVolume(const double newVolume)
 	{
+		if (!ttsInitialized) return;
 		const USHORT volume = (short)(100 * newVolume);
 		pVoice->SetVolume(volume);
 	}
-	void FlutterTtsPlugin::setPitch(const double newPitch) {pitch = newPitch;}
+	void FlutterTtsPlugin::setPitch(const double newPitch) { pitch = newPitch; }
 	void FlutterTtsPlugin::setRate(const double newRate)
 	{
+		if (!ttsInitialized) return;
 		const long speechRate = (long)((newRate - 0.5) * 15);
 		pVoice->SetRate(speechRate);
 	}
 	void FlutterTtsPlugin::getVoices(flutter::EncodableList& voices) {
+		if (!ttsInitialized) return;
 		HRESULT hr;
 		IEnumSpObjectTokens* cpEnum = NULL;
 		hr = SpEnumTokens(SPCAT_VOICES, NULL, NULL, &cpEnum);
@@ -426,6 +467,7 @@ namespace {
 		}
 	}
 	void FlutterTtsPlugin::setVoice(const std::string voiceLanguage, const std::string voiceName, FlutterResult& result) {
+		if (!ttsInitialized) { result->Success(0); return; }
 		HRESULT hr;
 		IEnumSpObjectTokens* cpEnum = NULL;
 		hr = SpEnumTokens(SPCAT_VOICES, NULL, NULL, &cpEnum);
@@ -465,6 +507,7 @@ namespace {
 	}
 	void FlutterTtsPlugin::getLanguages(flutter::EncodableList& languages)
 	{
+		if (!ttsInitialized) return;
 		HRESULT hr;
 		IEnumSpObjectTokens* cpEnum = NULL;
 		hr = SpEnumTokens(SPCAT_VOICES, NULL, NULL, &cpEnum);
@@ -501,6 +544,7 @@ namespace {
 	}
 
 	void FlutterTtsPlugin::setLanguage(const std::string voiceLanguage, FlutterResult& result) {
+		if (!ttsInitialized) { result->Success(0); return; }
 		HRESULT hr;
 		IEnumSpObjectTokens* cpEnum = NULL;
 		hr = SpEnumTokens(SPCAT_VOICES, NULL, NULL, &cpEnum);
@@ -541,7 +585,12 @@ namespace {
 		const flutter::MethodCall<flutter::EncodableValue>& method_call,
 		FlutterResult result) {
 
-		if (method_call.method_name().compare("getPlatformVersion") == 0) {
+		if (method_call.method_name().compare("isTtsAvailable") == 0) {
+			if (!ttsInitialized) initTTS();
+			result->Success(flutter::EncodableValue(ttsInitialized));
+			return;
+		}
+		else if (method_call.method_name().compare("getPlatformVersion") == 0) {
 			std::ostringstream version_stream;
 			version_stream << "Windows ";
 			if (IsWindows10OrGreater()) {
@@ -554,6 +603,7 @@ namespace {
 				version_stream << "7";
 			}
 			result->Success(flutter::EncodableValue(version_stream.str()));
+			return;
 		}
 #endif
 		else if (method_call.method_name().compare("awaitSpeakCompletion") == 0) {
