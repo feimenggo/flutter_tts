@@ -7,18 +7,6 @@ endif()
 set(PROJECT_NAME "flutter_tts")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
-find_program(NUGET_EXE NAMES nuget)
-if(NOT NUGET_EXE)
-    message(FATAL_ERROR "nuget.exe not found. Please install it.")
-endif()
-
-execute_process(
-        COMMAND ${NUGET_EXE} install Microsoft.Windows.CppWinRT
-        -Version 2.0.210503.1
-        -ExcludeVersion
-        -OutputDirectory ${CMAKE_BINARY_DIR}/packages
-)
-
 set(PLUGIN_NAME "flutter_tts_plugin")
 
 add_library(${PLUGIN_NAME} SHARED
@@ -32,7 +20,6 @@ set_target_properties(${PLUGIN_NAME} PROPERTIES
         VISIBILITY_INLINES_HIDDEN YES
 )
 
-target_compile_features(${PLUGIN_NAME} PUBLIC cxx_std_20)
 target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
 
 target_include_directories(${PLUGIN_NAME} INTERFACE
@@ -42,14 +29,6 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_link_libraries(${PLUGIN_NAME} PRIVATE
         flutter
         flutter_wrapper_plugin
-)
-
-set_target_properties(${PLUGIN_NAME} PROPERTIES VS_PROJECT_IMPORT
-        "${CMAKE_BINARY_DIR}/packages/Microsoft.Windows.CppWinRT/build/native/Microsoft.Windows.CppWinRT.props"
-)
-
-target_link_libraries(${PLUGIN_NAME} PRIVATE
-        "${CMAKE_BINARY_DIR}/packages/Microsoft.Windows.CppWinRT/build/native/Microsoft.Windows.CppWinRT.targets"
 )
 
 set(flutter_tts_bundled_libraries "" PARENT_SCOPE)
