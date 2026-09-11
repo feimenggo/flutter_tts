@@ -266,6 +266,7 @@ namespace {
 #include <string>
 #include <atlstr.h>
 #include <array>
+#include <mutex>
 #include <sapi.h>
 #pragma warning(disable:4996)
 #include <sphelper.h>
@@ -294,6 +295,9 @@ namespace {
 		void setVoice(const std::string, const std::string, FlutterResult&);
 		void getLanguages(flutter::EncodableList&);
 		void setLanguage(const std::string, FlutterResult&);
+		void cancelPendingWait();
+		void handleSpeechComplete();
+		static void CALLBACK speechCompleteCallback(PVOID lpParam, BOOLEAN TimerOrWaitFired);
 
 		bool initTTS();
 		ISpVoice* pVoice;
@@ -305,6 +309,7 @@ namespace {
 		bool paused();
 		FlutterResult speakResult;
     	HANDLE addWaitHandle;
+		std::mutex mutex_;
 	};
 
 	void FlutterTtsPlugin::RegisterWithRegistrar(
@@ -345,21 +350,31 @@ namespace {
 	}
 
 	FlutterTtsPlugin::~FlutterTtsPlugin() {
+		if (addWaitHandle != NULL) {
+			UnregisterWaitEx(addWaitHandle, INVALID_HANDLE_VALUE);
+			addWaitHandle = NULL;
+		}
 		if (ttsInitialized) {
 			::CoUninitialize();
 		}
 	}
 
-    void CALLBACK setResult(PVOID lpParam, BOOLEAN TimerOrWaitFired)
-    {
-        flutter::MethodResult<flutter::EncodableValue>* p = (flutter::MethodResult<flutter::EncodableValue>*) lpParam;
-        p->Success(1);
-    }
+	void FlutterTtsPlugin::handleSpeechComplete()
+	{
+		// Speech finished: take the pending future and clear it so it is completed only once
+		FlutterResult toComplete;
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			toComplete = std::move(speakResult);
+		}
+		methodChannel->InvokeMethod("speak.onComplete", NULL);
+		if (toComplete) toComplete->Success(1);
+	}
 
-    void CALLBACK onCompletion(PVOID lpParam, BOOLEAN TimerOrWaitFired)
-    {
-        methodChannel->InvokeMethod("speak.onComplete", NULL);
-    }
+	void CALLBACK FlutterTtsPlugin::speechCompleteCallback(PVOID lpParam, BOOLEAN TimerOrWaitFired)
+	{
+		static_cast<FlutterTtsPlugin*>(lpParam)->handleSpeechComplete();
+	}
 
 	bool FlutterTtsPlugin::speaking()
 	{
@@ -372,8 +387,26 @@ namespace {
 	bool FlutterTtsPlugin::paused() { return isPaused; }
 
 
+	// Cancel the previous completion wait and release any pending future
+	// (prevents the Dart side await from hanging forever)
+	void FlutterTtsPlugin::cancelPendingWait()
+	{
+		FlutterResult toComplete;
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			if (addWaitHandle != NULL) {
+				UnregisterWaitEx(addWaitHandle, INVALID_HANDLE_VALUE);
+				addWaitHandle = NULL;
+			}
+			toComplete = std::move(speakResult);
+		}
+		if (toComplete) toComplete->Success(1);
+	}
+
 	void FlutterTtsPlugin::speak(const std::string text, FlutterResult result) {
 		if (!ttsInitialized) { result->Error("TTS_NOT_AVAILABLE", "TTS is not available on this system"); return; }
+		cancelPendingWait();
+
 		HRESULT hr;
 		const std::string arg = "<PITCH MIDDLE = '" + std::to_string(int((pitch - 1) * 10 * (1 + (pitch < 1)) )) + "'/>" + text;
 
@@ -382,14 +415,17 @@ namespace {
 		MultiByteToWideChar(CP_UTF8, 0, arg.c_str(), -1, wstr, wchars_num);
 		hr = pVoice->Speak(wstr, 1, NULL);
 		delete[] wstr;
+
 		HANDLE speakCompletionHandle = pVoice->SpeakCompleteEvent();
 		methodChannel->InvokeMethod("speak.onStart", NULL);
-		RegisterWaitForSingleObject(&addWaitHandle, speakCompletionHandle, (WAITORTIMERCALLBACK)&onCompletion, speakResult.get(), INFINITE, WT_EXECUTEONLYONCE);
-		if (awaitSpeakCompletion){
-		    speakResult = std::move(result);
-		    RegisterWaitForSingleObject(&addWaitHandle, speakCompletionHandle, (WAITORTIMERCALLBACK)&setResult, speakResult.get(), INFINITE, WT_EXECUTEONLYONCE);
+
+		const bool awaitComplete = awaitSpeakCompletion;
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			if (awaitComplete) speakResult = std::move(result);
+			RegisterWaitForSingleObject(&addWaitHandle, speakCompletionHandle, (WAITORTIMERCALLBACK)&speechCompleteCallback, this, INFINITE, WT_EXECUTEONLYONCE);
 		}
-		else result->Success(1);
+		if (!awaitComplete) result->Success(1);
 	}
 	void FlutterTtsPlugin::pause()
 	{
@@ -411,6 +447,7 @@ namespace {
 	void FlutterTtsPlugin::stop()
 	{
 		if (!ttsInitialized) return;
+		cancelPendingWait();
 		pVoice->Speak(L"", 2, NULL);
 		pVoice->Resume();
 		isPaused = false;
